@@ -9,8 +9,6 @@ A portfolio-quality iOS app: live market prices over WebSocket, an animated real
 | ![Markets](Screenshots/markets.png) | ![Asset Detail](Screenshots/detail.png) | ![Portfolio](Screenshots/portfolio.png) |
 | Live prices, sparklines, price flashes | Live-growing chart, scrubbing, timeframes | Live valuation, P&L, allocation |
 
-*(Add screenshots/GIFs from the simulator: the chart growing in real time and a price flash make the best GIF.)*
-
 ## What it does
 
 - **Markets** — the tracked assets with live prices streamed from Binance's public WebSocket, 1-hour sparklines, 24h change pills, and green/red flashes on every tick. Skeleton shimmer while loading; friendly error state with retry.
