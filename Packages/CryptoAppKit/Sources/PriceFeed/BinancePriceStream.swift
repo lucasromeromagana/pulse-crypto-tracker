@@ -6,13 +6,20 @@ public struct BinancePriceStream: PriceStreaming {
     public struct Configuration: Sendable {
         public var endpoint: URL
         public var backoff: ExponentialBackoff
+        /// How long the receive loop tolerates silence before treating the
+        /// connection as dead and reconnecting. Binance ticks at least once per
+        /// second, so the default of 10 s is generous; injectable so tests and
+        /// alternative endpoints can tune it, like `backoff` and its generator.
+        public var silenceTimeout: TimeInterval
 
         public init(
             endpoint: URL = URL(string: "wss://stream.binance.com:9443/stream")!,
-            backoff: ExponentialBackoff = .standard
+            backoff: ExponentialBackoff = .standard,
+            silenceTimeout: TimeInterval = 10
         ) {
             self.endpoint = endpoint
             self.backoff = backoff
+            self.silenceTimeout = silenceTimeout
         }
     }
 
@@ -41,7 +48,7 @@ public struct BinancePriceStream: PriceStreaming {
                     do {
                         var awaitingFirstMessage = true
                         while !Task.isCancelled {
-                            let message = try await socket.receive()
+                            let message = try await Self.receiveWithTimeout(socket, seconds: configuration.silenceTimeout)
                             if awaitingFirstMessage {
                                 awaitingFirstMessage = false
                                 attempt = 0
@@ -75,6 +82,38 @@ public struct BinancePriceStream: PriceStreaming {
         var components = URLComponents(url: configuration.endpoint, resolvingAgainstBaseURL: false)!
         components.queryItems = [URLQueryItem(name: "streams", value: streams)]
         return components.url!
+    }
+
+    /// Races `socket.receive()` against a silence timeout so a dead connection
+    /// can't wedge the receive loop indefinitely.
+    ///
+    /// A TCP connection that dies silently — Wi-Fi cut mid-stream, the peer
+    /// disappearing without sending a close frame — never surfaces an error to
+    /// `receive()`; the call just suspends, sometimes for minutes, so the
+    /// reconnection logic in the catch path never gets a chance to run. Binance
+    /// publishes a miniTicker at least once per second, which makes a gap longer
+    /// than `seconds` a reliable death signal rather than mere idleness. When the
+    /// timeout wins the race we throw `URLError(.timedOut)`, turning the silence
+    /// into an ordinary receive failure that flows into the existing backoff and
+    /// reconnect path like any other transport error.
+    private static func receiveWithTimeout(
+        _ socket: URLSessionWebSocketTask,
+        seconds: TimeInterval
+    ) async throws -> URLSessionWebSocketTask.Message {
+        try await withThrowingTaskGroup(of: URLSessionWebSocketTask.Message.self) { group in
+            group.addTask {
+                try await socket.receive()
+            }
+            group.addTask {
+                try await Task.sleep(for: .seconds(seconds))
+                throw URLError(.timedOut)
+            }
+            // Whichever child finishes first wins; cancel the loser so we never
+            // leak a dangling receive or an unfired timer.
+            defer { group.cancelAll() }
+            guard let first = try await group.next() else { throw URLError(.timedOut) }
+            return first
+        }
     }
 
     static func tick(from message: URLSessionWebSocketTask.Message) -> PriceTick? {
