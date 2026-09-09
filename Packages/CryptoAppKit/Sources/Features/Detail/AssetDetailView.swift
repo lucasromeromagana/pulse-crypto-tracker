@@ -108,9 +108,20 @@ public struct AssetDetailView: View {
                     Button("Retry") { viewModel.retryHistory() }
                         .font(AppTypography.label(14, weight: .semibold))
                         .foregroundStyle(Palette.accent)
+                    if viewModel.retryFailedCount > 0 {
+                        Text("Still no connection. Check your internet and try again.")
+                            .font(AppTypography.label(12, weight: .medium))
+                            .foregroundStyle(Palette.loss)
+                            .multilineTextAlignment(.center)
+                            // Re-insert on every failed retry so the hint pulses
+                            // again even when the message text is unchanged.
+                            .id(viewModel.retryFailedCount)
+                            .transition(.opacity.combined(with: .move(edge: .top)))
+                    }
                 }
                 .frame(height: 220)
                 .frame(maxWidth: .infinity)
+                .animation(.snappy(duration: 0.25), value: viewModel.retryFailedCount)
             }
         }
         .card()

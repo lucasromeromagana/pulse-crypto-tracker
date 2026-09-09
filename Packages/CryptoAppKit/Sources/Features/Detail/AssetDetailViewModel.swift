@@ -8,6 +8,10 @@ import PriceFeed
 public final class AssetDetailViewModel {
     public let asset: Asset
     public private(set) var chartState: LoadState<[PricePoint]> = .loading
+    /// Number of times a *manual* Retry has ended in failure. Drives the red
+    /// "still can't connect" hint under the button so the tap has visible feedback
+    /// even when the chart lands back in the same `.failed` state.
+    public private(set) var retryFailedCount = 0
     public private(set) var currentPrice: Decimal
     public private(set) var movement: PriceMovement = .flat
     public private(set) var changePercent24h: Decimal
@@ -22,6 +26,7 @@ public final class AssetDetailViewModel {
     private let marketData: any MarketDataProviding
     @ObservationIgnored private var streamConsumer: Task<Void, Never>?
     @ObservationIgnored private var historyLoader: Task<Void, Never>?
+    @ObservationIgnored private var countNextFailureAsRetry = false
 
     public init(row: MarketsViewModel.Row, dependencies: AppDependencies) {
         asset = row.asset
@@ -48,24 +53,32 @@ public final class AssetDetailViewModel {
     public func select(_ timeframe: Timeframe) {
         guard timeframe != self.timeframe else { return }
         self.timeframe = timeframe
-        historyLoader?.cancel()
-        historyLoader = Task { await loadHistory() }
+        reloadHistory()
     }
 
     public func retryHistory() {
+        countNextFailureAsRetry = true
+        reloadHistory()
+    }
+
+    private func reloadHistory() {
         historyLoader?.cancel()
         historyLoader = Task { await loadHistory() }
     }
 
     private func loadHistory() async {
+        let isRetry = countNextFailureAsRetry
+        countNextFailureAsRetry = false
         chartState = .loading
         do {
             let points = try await marketData.history(for: asset.symbol, timeframe: timeframe)
             guard !Task.isCancelled else { return }
             chartState = .loaded(points)
+            retryFailedCount = 0
         } catch {
             guard !Task.isCancelled else { return }
             chartState = .failed(message: "The chart couldn't be loaded right now.")
+            if isRetry { retryFailedCount += 1 }
         }
     }
 
@@ -75,7 +88,14 @@ public final class AssetDetailViewModel {
             for await event in events {
                 switch event {
                 case .status(let status):
+                    let recoveredConnection = status == .live && feedStatus != .live
                     feedStatus = status
+                    // When the feed comes back after a drop, silently reload a
+                    // chart that failed while offline — the same way live ticks
+                    // resume — so the user doesn't have to tap Retry themselves.
+                    if recoveredConnection, case .failed = chartState {
+                        reloadHistory()
+                    }
                 case .tick(let tick):
                     apply(tick)
                 }
